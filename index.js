@@ -90,7 +90,7 @@ async function run() {
             if (existingUser) {
                 return res.send({ message: "user already exists", insertedId: null })
             }
-            const result = await biodatasCollection.insertOne(user)
+            const result = await biodatasCollection.insertOne(biodata)
             res.send(result)
         })
 
