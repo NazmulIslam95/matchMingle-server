@@ -1,21 +1,19 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const app = express()
 const cors = require('cors');
-require('dotenv').config()
+require('dotenv').config();
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+
+const app = express();
 const port = process.env.PORT || 5000;
 
-// const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY)
-
 // middleware
-app.use(cors())
-app.use(express.json())
+app.use(cors());
+app.use(express.json());
 
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.8ww6tl6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 const client = new MongoClient(uri, {
-    // Create a MongoClient with a MongoClientOptions object to set the Stable API version
     serverApi: {
         version: ServerApiVersion.v1,
         strict: true,
@@ -25,130 +23,199 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        // Connect the client to the server	(optional starting in v4.7)
-        // await client.connect();
+        await client.connect();
 
-        const biodatasCollection = client.db('matchMingle').collection('biodatas')
-        const usersCollection = client.db('matchMingle').collection('users')
-        const favoriteBiodatasCollection = client.db('matchMingle').collection('favoriteBiodatas')
+        const biodatasCollection = client.db('matchMingle').collection('biodatas');
+        const usersCollection = client.db('matchMingle').collection('users');
+        const favoriteBiodatasCollection = client.db('matchMingle').collection('favoriteBiodatas');
 
-
-
-        // jwt related API
+        // JWT related API
         app.post('/jwt', async (req, res) => {
-            const user = req.body
-            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
-            res.send({ token })
-        })
+            const user = req.body;
+            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
+            res.send({ token });
+        });
 
-        // middlewares
+        // Middleware for token verification
         const verifyToken = (req, res, next) => {
-            // console.log('inside verify token', req.headers.authorization);
             if (!req.headers.authorization) {
-                return res.status(401).send({ message: 'forbidden Access' })
+                return res.status(401).send({ message: 'Forbidden Access' });
             }
             const token = req.headers.authorization.split(' ')[1];
             jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
                 if (err) {
-                    return res.status(401).send({ message: 'forbidden Access' })
+                    return res.status(401).send({ message: 'Forbidden Access' });
                 }
                 req.decoded = decoded;
                 next();
-            })
-        }
+            });
+        };
 
         const verifyAdmin = async (req, res, next) => {
-            const email = req.decoded.email
-            const query = { email: email }
-            const user = await usersCollection.findOne(query)
-            const isAdmin = user?.role === 'admin'
-            if (!isAdmin) {
-                return res.status(403).send({ message: 'forbidden access' })
+            const email = req.decoded.email;
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            if (user?.role !== 'admin') {
+                return res.status(403).send({ message: 'Forbidden Access' });
             }
-            next()
-        }
+            next();
+        };
 
-
-        //biodata related API//
-
+        // Biodata related API
         app.get('/biodatas', async (req, res) => {
-            const result = await biodatasCollection.find().toArray()
-            res.send(result)
-        })
+            const result = await biodatasCollection.find().toArray();
+            res.send(result);
+        });
 
-        app.get('/biodatas/:id', async (req, res) => {
-            const id = req.params.id
-            const query = { _id: new ObjectId(id) }
-            const result = await biodatasCollection.findOne(query)
-            res.send(result)
-        })
+
+
+        // Route to get biodata by ID
+        app.get('/biodata/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await biodatasCollection.findOne(query);
+            res.send(result);
+        });
+
+        // Route to get biodata by email
+        app.get('/biodataByEmail/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const query = { email };
+            const result = await biodatasCollection.findOne(query);
+            if (!result) {
+                return res.status(404).send({ error: 'Biodata not found' });
+            }
+            res.send(result);
+        });
 
         app.post('/biodatas', async (req, res) => {
-            const biodata = req.body
-            const query = { email: biodata.email }
-            const existingUser = await biodatasCollection.findOne(query)
-            if (existingUser) {
-                return res.send({ message: "user already exists", insertedId: null })
-            }
-            const result = await biodatasCollection.insertOne(biodata)
-            res.send(result)
-        })
+            try {
+                const biodata = req.body;
+                const query = { email: biodata.email };
+                const existingUser = await biodatasCollection.findOne(query);
 
-        //user related API//
+                if (existingUser) {
+                    const result = await biodatasCollection.updateOne(query, { $set: biodata });
+                    return res.send({ message: "Biodata updated successfully", modifiedCount: result.modifiedCount });
+                } else {
+                    const maxBiodata = await biodatasCollection.findOne({}, { sort: { biodataId: -1 } });
+                    let newBiodataId = "1";
+                    if (maxBiodata && maxBiodata.biodataId != null) {
+                        const currentBiodataId = parseInt(maxBiodata.biodataId);
+                        newBiodataId = (currentBiodataId + 1).toString();
+                    }
+                    biodata.biodataId = newBiodataId;
+                    const insertResult = await biodatasCollection.insertOne(biodata);
+                    res.send({ message: "Biodata inserted successfully", insertedId: insertResult.insertedId });
+                }
+            } catch (error) {
+                console.error("Error processing biodata:", error);
+                res.status(500).send({ message: "Internal Server Error" });
+            }
+        });
+
+        // User related API
+
+        app.get('/users', async (req, res) => {
+            const result = await usersCollection.find().toArray();
+            res.send(result);
+        });
 
         app.get('/users/admin/:email', verifyToken, verifyAdmin, async (req, res) => {
-            const email = req.params.email
+            const email = req.params.email;
             if (email !== req.decoded.email) {
-                return res.status(403).send({ message: 'unauthorized access' })
+                return res.status(403).send({ message: 'Unauthorized Access' });
             }
-            const query = { email: email }
-            const user = await usersCollection.findOne(query)
-            let admin = false
-            if (user) {
-                admin = user?.role === 'admin'
-            }
-            res.send({ admin })
-        })
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            const admin = user?.role === 'admin';
+            res.send({ admin });
+        });
 
         app.get('/users/premium/:email', verifyToken, async (req, res) => {
-            const email = req.params.email
+            const email = req.params.email;
             if (email !== req.decoded.email) {
-                return res.status(403).send({ message: 'unauthorized access' })
+                return res.status(403).send({ message: 'Unauthorized Access' });
             }
-            const query = { email: email }
-            const user = await usersCollection.findOne(query)
-            let premium = false
-            if (user) {
-                premium = user?.subscription === 'premium'
-            }
-            res.send({ premium })
-        })
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            const premium = user?.subscription === 'premium';
+            res.send({ premium });
+        });
 
         app.post('/users', async (req, res) => {
-            const user = req.body
-            const query = { email: user.email }
-            const existingUser = await usersCollection.findOne(query)
+            const user = req.body;
+            const query = { email: user.email };
+            const existingUser = await usersCollection.findOne(query);
             if (existingUser) {
-                return res.send({ message: "user already exists", insertedId: null })
+                return res.send({ message: "User already exists", insertedId: null });
             }
-            const result = await usersCollection.insertOne(user)
+            const result = await usersCollection.insertOne(user);
+            res.send(result);
+        });
+
+        app.patch('/users/pending/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const filter = { email: email };
+            const updatedDoc = {
+                $set: {
+                    subscription: 'pending'
+                }
+            }
+            const result = await usersCollection.updateOne(filter, updatedDoc)
             res.send(result)
         })
 
+        app.patch('/users/premium/:id', async (req, res) => {
+            const id = req.params.id
+            const filter = { _id: new ObjectId(id) }
+            const updatedDoc = {
+                $set: {
+                    subscription: 'premium'
+                }
+            }
+            const result = await usersCollection.updateOne(filter, updatedDoc)
+            res.send(result)
+        })
 
+        app.patch('/users/admin/:id', async (req, res) => {
+            const id = req.params.id
+            const filter = { _id: new ObjectId(id) }
+            const updatedDoc = {
+                $set: {
+                    role: 'admin'
+                }
+            }
+            const result = await usersCollection.updateOne(filter, updatedDoc)
+            res.send(result)
+        })
+
+        app.patch('/users/premium/:id', async (req, res) => {
+            const id = req.params.id
+            const filter = { _id: new ObjectId(id) }
+            const updatedDoc = {
+                $set: {
+                    subscription: 'premium'
+                }
+            }
+            const result = await usersCollection.updateOne(filter, updatedDoc)
+            res.send(result)
+        })
+
+        // Favorite biodatas API
         app.get('/favoriteBiodatas', async (req, res) => {
-            const email = req.query.email
-            const query = { email: email }
-            const result = await favoriteBiodatasCollection.find(query).toArray()
-            res.send(result)
-        })
+            const email = req.query.email;
+            const query = { email };
+            const result = await favoriteBiodatasCollection.find(query).toArray();
+            res.send(result);
+        });
 
         app.delete('/favoriteBiodatas/:id', async (req, res) => {
-            const id = req.params.id
-            const query = { _id: new ObjectId(id) }
-            const result = await favoriteBiodatasCollection.deleteOne(query)
-            res.send(result)
-        })
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await favoriteBiodatasCollection.deleteOne(query);
+            res.send(result);
+        });
 
         app.post('/favoriteBiodatas', async (req, res) => {
             const favBiodata = req.body;
@@ -159,28 +226,21 @@ async function run() {
                 }
                 const result = await favoriteBiodatasCollection.insertOne(favBiodata);
                 res.send(result);
-            }
-            catch (err) {
+            } catch (err) {
                 res.status(500).send({ error: 'Failed to insert data' });
             }
         });
-
-
-
-        // Send a ping to confirm a successful connection
-        // await client.db("admin").command({ ping: 1 });
-        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
-        // Ensures that the client will close when you finish/error
+        // Ensure that the client will close when you finish/error
         // await client.close();
     }
 }
 run().catch(console.dir);
 
 app.get('/', (req, res) => {
-    res.send('MatchMingle Is Running')
-})
+    res.send('MatchMingle Is Running');
+});
 
 app.listen(port, () => {
     console.log(`MatchMingle Is Running On port ${port}`);
-})
+});
